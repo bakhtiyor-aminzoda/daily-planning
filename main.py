@@ -27,8 +27,8 @@ app = FastAPI()
 # email -> telegram_id
 users: dict[str, int] = {}
 
-# email -> last sent plan text
-last_plans: dict[str, str] = {}
+# email -> { "today": str, "tomorrow": str }
+last_plans: dict[str, dict[str, str]] = {}
 
 # =========================
 # TELEGRAM UI
@@ -40,8 +40,7 @@ def main_menu_keyboard():
             ["🔁 Повторить последний план"],
             ["⚙️ Настройки", "ℹ️ Помощь"]
         ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False
+        "resize_keyboard": True
     }
 
 # =========================
@@ -97,54 +96,84 @@ async def telegram_webhook(request: Request):
     if re.match(r"[^@]+@[^@]+\.[^@]+", text):
         email = text.lower()
         users[email] = chat_id
+        last_plans.setdefault(email, {})
 
         send_telegram(
             chat_id,
             f"✅ Почта *{email}* сохранена.\n\n"
-            "Теперь я буду присылать тебе план дня *каждый день в 09:00* 📅",
+            "Теперь ты можешь:\n"
+            "• смотреть план на сегодня\n"
+            "• заранее проверять завтрашний день 📆",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
 
     # =========================
-    # BUTTON HANDLERS
+    # BUTTONS
     # =========================
 
     if text == "📅 План на сегодня":
-        send_telegram(
-            chat_id,
-            "📅 План на сегодня будет автоматически прислан утром.\n\n"
-            "Если хочешь получить его *прямо сейчас*, нажми 🔁 *Повторить последний план*.",
-            keyboard=main_menu_keyboard()
-        )
+        email = next((e for e, cid in users.items() if cid == chat_id), None)
+
+        if email and "today" in last_plans.get(email, {}):
+            send_telegram(
+                chat_id,
+                last_plans[email]["today"],
+                keyboard=main_menu_keyboard()
+            )
+        else:
+            send_telegram(
+                chat_id,
+                "📅 План на сегодня будет прислан автоматически утром.\n\n"
+                "Если рассылка ещё не была — подожди немного 😉",
+                keyboard=main_menu_keyboard()
+            )
         return {"ok": True}
 
     if text == "📆 План на завтра":
-        send_telegram(
-            chat_id,
-            "📆 *План на завтра*\n\n"
-            "⏳ Функция в разработке.\n"
-            "Совсем скоро ты сможешь смотреть завтрашний день заранее 😉",
-            keyboard=main_menu_keyboard()
-        )
-        return {"ok": True}
-
-    if text == "🔁 Повторить последний план":
-        # ищем email по chat_id
         email = next((e for e, cid in users.items() if cid == chat_id), None)
 
-        if not email or email not in last_plans:
+        if not email:
             send_telegram(
                 chat_id,
-                "🔁 Пока нет сохранённого плана.\n\n"
-                "Он появится после первой автоматической рассылки 📅",
+                "❌ Сначала введи корпоративную почту через /start",
                 keyboard=main_menu_keyboard()
             )
             return {"ok": True}
 
+        if "tomorrow" in last_plans.get(email, {}):
+            send_telegram(
+                chat_id,
+                last_plans[email]["tomorrow"],
+                keyboard=main_menu_keyboard()
+            )
+        else:
+            send_telegram(
+                chat_id,
+                "📆 План на завтра ещё не синхронизирован.\n\n"
+                "⏳ Он появится после обновления календаря в Outlook.",
+                keyboard=main_menu_keyboard()
+            )
+        return {"ok": True}
+
+    if text == "🔁 Повторить последний план":
+        email = next((e for e, cid in users.items() if cid == chat_id), None)
+
+        if not email or not last_plans.get(email):
+            send_telegram(
+                chat_id,
+                "🔁 Пока нет сохранённых планов.",
+                keyboard=main_menu_keyboard()
+            )
+            return {"ok": True}
+
+        # приоритет: today → tomorrow
+        plans = last_plans[email]
+        plan = plans.get("today") or plans.get("tomorrow")
+
         send_telegram(
             chat_id,
-            f"🔁 *Последний план:*\n\n{last_plans[email]}",
+            f"🔁 *Последний план:*\n\n{plan}",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
@@ -152,12 +181,11 @@ async def telegram_webhook(request: Request):
     if text == "⚙️ Настройки":
         send_telegram(
             chat_id,
-            "⚙️ *Настройки*\n\n"
-            "Скоро здесь появится:\n"
+            "⚙️ Настройки скоро будут доступны.\n\n"
+            "Планируется:\n"
             "• время рассылки\n"
             "• таймзона\n"
-            "• рабочие дни\n\n"
-            "Stay tuned 😉",
+            "• рабочие дни",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
@@ -166,19 +194,17 @@ async def telegram_webhook(request: Request):
         send_telegram(
             chat_id,
             "ℹ️ *Как пользоваться ботом:*\n\n"
-            "1️⃣ Введи корпоративную почту\n"
-            "2️⃣ Получай план дня автоматически\n"
-            "3️⃣ Используй кнопки для управления\n\n"
+            "• Введи корпоративную почту\n"
+            "• Используй кнопки для управления\n"
+            "• Смотри план на сегодня и завтра\n\n"
             "Если что-то пошло не так — напиши /start",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
 
-    # Fallback
     send_telegram(
         chat_id,
-        "🤔 Я тебя не понял.\n\n"
-        "Используй кнопки ниже 👇",
+        "🤔 Я тебя не понял. Используй кнопки ниже 👇",
         keyboard=main_menu_keyboard()
     )
 
@@ -199,20 +225,22 @@ async def outlook_webhook(
 
     email = data.get("email", "").lower()
     events = data.get("events", [])
+    day = data.get("day", "today")  # today | tomorrow
 
     chat_id = users.get(email)
     if not chat_id:
         return {"status": "user not registered"}
 
     if not events:
-        message = "📅 *Сегодня встреч нет* 🎉"
+        message = "📅 *Встреч нет* 🎉"
     else:
-        message = "📅 *План на сегодня:*\n\n"
+        title = "📅 *План на сегодня:*" if day == "today" else "📆 *План на завтра:*"
+        message = f"{title}\n\n"
         for e in events:
             message += f"{e['start']}–{e['end']} • {e['subject']}\n"
 
-    # сохраняем последний план
-    last_plans[email] = message
+    last_plans.setdefault(email, {})
+    last_plans[email][day] = message
 
     send_telegram(chat_id, message, keyboard=main_menu_keyboard())
     return {"status": "ok"}
