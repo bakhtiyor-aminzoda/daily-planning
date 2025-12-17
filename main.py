@@ -5,14 +5,11 @@ import os
 
 from dotenv import load_dotenv
 
-# Загружаем .env (локально)
+# =========================
+# LOAD ENV
+# =========================
 load_dotenv()
 
-app = FastAPI()
-
-# =========================
-# ENV VARIABLES
-# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 
@@ -22,29 +19,50 @@ if not BOT_TOKEN:
 if not API_KEY:
     raise RuntimeError("API_KEY is not set")
 
+app = FastAPI()
+
 # =========================
 # TEMP STORAGE (MVP)
 # =========================
 # email -> telegram_id
 users: dict[str, int] = {}
 
+# email -> last sent plan text
+last_plans: dict[str, str] = {}
+
+# =========================
+# TELEGRAM UI
+# =========================
+def main_menu_keyboard():
+    return {
+        "keyboard": [
+            ["📅 План на сегодня", "📆 План на завтра"],
+            ["🔁 Повторить последний план"],
+            ["⚙️ Настройки", "ℹ️ Помощь"]
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
+
 # =========================
 # TELEGRAM SENDER
 # =========================
-def send_telegram(chat_id: int, text: str):
+def send_telegram(chat_id: int, text: str, keyboard: dict | None = None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        },
-        timeout=10
-    )
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+
+    if keyboard:
+        payload["reply_markup"] = keyboard
+
+    requests.post(url, json=payload, timeout=10)
 
 # =========================
-# ROOT (OPTIONAL)
+# ROOT
 # =========================
 @app.get("/")
 def root():
@@ -69,7 +87,9 @@ async def telegram_webhook(request: Request):
         send_telegram(
             chat_id,
             "Привет 👋\n\n"
-            "Введи свою *корпоративную почту*, чтобы получать план дня из Outlook 📅"
+            "Я помогу тебе получать план дня из Outlook 📅\n\n"
+            "Сначала введи *корпоративную почту* 👇",
+            keyboard=main_menu_keyboard()
         )
         return {"ok": True}
 
@@ -81,14 +101,85 @@ async def telegram_webhook(request: Request):
         send_telegram(
             chat_id,
             f"✅ Почта *{email}* сохранена.\n\n"
-            "Теперь я буду присылать тебе план дня *каждый день в 09:00* 📅"
+            "Теперь я буду присылать тебе план дня *каждый день в 09:00* 📅",
+            keyboard=main_menu_keyboard()
         )
         return {"ok": True}
 
-    # Invalid input
+    # =========================
+    # BUTTON HANDLERS
+    # =========================
+
+    if text == "📅 План на сегодня":
+        send_telegram(
+            chat_id,
+            "📅 План на сегодня будет автоматически прислан утром.\n\n"
+            "Если хочешь получить его *прямо сейчас*, нажми 🔁 *Повторить последний план*.",
+            keyboard=main_menu_keyboard()
+        )
+        return {"ok": True}
+
+    if text == "📆 План на завтра":
+        send_telegram(
+            chat_id,
+            "📆 *План на завтра*\n\n"
+            "⏳ Функция в разработке.\n"
+            "Совсем скоро ты сможешь смотреть завтрашний день заранее 😉",
+            keyboard=main_menu_keyboard()
+        )
+        return {"ok": True}
+
+    if text == "🔁 Повторить последний план":
+        # ищем email по chat_id
+        email = next((e for e, cid in users.items() if cid == chat_id), None)
+
+        if not email or email not in last_plans:
+            send_telegram(
+                chat_id,
+                "🔁 Пока нет сохранённого плана.\n\n"
+                "Он появится после первой автоматической рассылки 📅",
+                keyboard=main_menu_keyboard()
+            )
+            return {"ok": True}
+
+        send_telegram(
+            chat_id,
+            f"🔁 *Последний план:*\n\n{last_plans[email]}",
+            keyboard=main_menu_keyboard()
+        )
+        return {"ok": True}
+
+    if text == "⚙️ Настройки":
+        send_telegram(
+            chat_id,
+            "⚙️ *Настройки*\n\n"
+            "Скоро здесь появится:\n"
+            "• время рассылки\n"
+            "• таймзона\n"
+            "• рабочие дни\n\n"
+            "Stay tuned 😉",
+            keyboard=main_menu_keyboard()
+        )
+        return {"ok": True}
+
+    if text == "ℹ️ Помощь":
+        send_telegram(
+            chat_id,
+            "ℹ️ *Как пользоваться ботом:*\n\n"
+            "1️⃣ Введи корпоративную почту\n"
+            "2️⃣ Получай план дня автоматически\n"
+            "3️⃣ Используй кнопки для управления\n\n"
+            "Если что-то пошло не так — напиши /start",
+            keyboard=main_menu_keyboard()
+        )
+        return {"ok": True}
+
+    # Fallback
     send_telegram(
         chat_id,
-        "❌ Пожалуйста, введи корректную корпоративную почту"
+        "🤔 Я тебя не понял.\n\n"
+        "Используй кнопки ниже 👇",
+        keyboard=main_menu_keyboard()
     )
 
     return {"ok": True}
@@ -120,5 +211,8 @@ async def outlook_webhook(
         for e in events:
             message += f"{e['start']}–{e['end']} • {e['subject']}\n"
 
-    send_telegram(chat_id, message)
+    # сохраняем последний план
+    last_plans[email] = message
+
+    send_telegram(chat_id, message, keyboard=main_menu_keyboard())
     return {"status": "ok"}
