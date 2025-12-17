@@ -1,25 +1,58 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 import requests
 import re
+import os
+
+from dotenv import load_dotenv
+
+# Загружаем .env (локально)
+load_dotenv()
 
 app = FastAPI()
 
-BOT_TOKEN = "8362883058:AAFEKdE-4DICxZ3-gKLpZOmPp9csmUe9tQk"
-API_KEY = "super-secret-key"
+# =========================
+# ENV VARIABLES
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_KEY = os.getenv("API_KEY")
 
-# 🧠 ВРЕМЕННОЕ ХРАНИЛИЩЕ (потом БД)
-users = {}  # email -> telegram_id
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
 
+if not API_KEY:
+    raise RuntimeError("API_KEY is not set")
+
+# =========================
+# TEMP STORAGE (MVP)
+# =========================
+# email -> telegram_id
+users: dict[str, int] = {}
+
+# =========================
+# TELEGRAM SENDER
+# =========================
 def send_telegram(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": chat_id,
-        "text": text
-    })
+    requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        },
+        timeout=10
+    )
 
-# -------------------------
+# =========================
+# ROOT (OPTIONAL)
+# =========================
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+# =========================
 # TELEGRAM WEBHOOK
-# -------------------------
+# =========================
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
@@ -31,14 +64,16 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
+    # /start
     if text == "/start":
         send_telegram(
             chat_id,
-            "Привет 👋\n\nВведи свою корпоративную почту, чтобы получать план дня 📅"
+            "Привет 👋\n\n"
+            "Введи свою *корпоративную почту*, чтобы получать план дня из Outlook 📅"
         )
         return {"ok": True}
 
-    # если ввели email
+    # Email input
     if re.match(r"[^@]+@[^@]+\.[^@]+", text):
         email = text.lower()
         users[email] = chat_id
@@ -46,10 +81,11 @@ async def telegram_webhook(request: Request):
         send_telegram(
             chat_id,
             f"✅ Почта *{email}* сохранена.\n\n"
-            "Теперь я буду присылать тебе план дня каждый день в 09:00 📅",
+            "Теперь я буду присылать тебе план дня *каждый день в 09:00* 📅"
         )
         return {"ok": True}
 
+    # Invalid input
     send_telegram(
         chat_id,
         "❌ Пожалуйста, введи корректную корпоративную почту"
@@ -57,9 +93,9 @@ async def telegram_webhook(request: Request):
 
     return {"ok": True}
 
-# -------------------------
+# =========================
 # POWER AUTOMATE WEBHOOK
-# -------------------------
+# =========================
 @app.post("/api/webhook/outlook")
 async def outlook_webhook(
     request: Request,
@@ -78,9 +114,9 @@ async def outlook_webhook(
         return {"status": "user not registered"}
 
     if not events:
-        message = "📅 Сегодня встреч нет 🎉"
+        message = "📅 *Сегодня встреч нет* 🎉"
     else:
-        message = "📅 План на сегодня:\n\n"
+        message = "📅 *План на сегодня:*\n\n"
         for e in events:
             message += f"{e['start']}–{e['end']} • {e['subject']}\n"
 
