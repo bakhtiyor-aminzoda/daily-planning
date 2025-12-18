@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 import requests
 import re
 import os
+import json
 
 from dotenv import load_dotenv
 
@@ -111,78 +112,50 @@ async def telegram_webhook(request: Request):
     # =========================
     # BUTTONS
     # =========================
+    email = next((e for e, cid in users.items() if cid == chat_id), None)
 
     if text == "📅 План на сегодня":
-        email = next((e for e, cid in users.items() if cid == chat_id), None)
-
         if email and "today" in last_plans.get(email, {}):
-            send_telegram(
-                chat_id,
-                last_plans[email]["today"],
-                keyboard=main_menu_keyboard()
-            )
+            send_telegram(chat_id, last_plans[email]["today"], keyboard=main_menu_keyboard())
         else:
             send_telegram(
                 chat_id,
-                "📅 План на сегодня будет прислан автоматически утром.\n\n"
-                "Если рассылка ещё не была — подожди немного 😉",
+                "📅 План на сегодня будет прислан автоматически утром ⏰",
                 keyboard=main_menu_keyboard()
             )
         return {"ok": True}
 
     if text == "📆 План на завтра":
-        email = next((e for e, cid in users.items() if cid == chat_id), None)
-
-        if not email:
-            send_telegram(
-                chat_id,
-                "❌ Сначала введи корпоративную почту через /start",
-                keyboard=main_menu_keyboard()
-            )
-            return {"ok": True}
-
-        if "tomorrow" in last_plans.get(email, {}):
-            send_telegram(
-                chat_id,
-                last_plans[email]["tomorrow"],
-                keyboard=main_menu_keyboard()
-            )
+        if email and "tomorrow" in last_plans.get(email, {}):
+            send_telegram(chat_id, last_plans[email]["tomorrow"], keyboard=main_menu_keyboard())
         else:
             send_telegram(
                 chat_id,
-                "📆 План на завтра ещё не синхронизирован.\n\n"
-                "⏳ Он появится после обновления календаря в Outlook.",
+                "📆 План на завтра ещё не синхронизирован ⏳",
                 keyboard=main_menu_keyboard()
             )
         return {"ok": True}
 
     if text == "🔁 Повторить последний план":
-        email = next((e for e, cid in users.items() if cid == chat_id), None)
-
-        if not email or not last_plans.get(email):
+        if email and last_plans.get(email):
+            plan = last_plans[email].get("today") or last_plans[email].get("tomorrow")
+            send_telegram(
+                chat_id,
+                f"🔁 *Последний план:*\n\n{plan}",
+                keyboard=main_menu_keyboard()
+            )
+        else:
             send_telegram(
                 chat_id,
                 "🔁 Пока нет сохранённых планов.",
                 keyboard=main_menu_keyboard()
             )
-            return {"ok": True}
-
-        # приоритет: today → tomorrow
-        plans = last_plans[email]
-        plan = plans.get("today") or plans.get("tomorrow")
-
-        send_telegram(
-            chat_id,
-            f"🔁 *Последний план:*\n\n{plan}",
-            keyboard=main_menu_keyboard()
-        )
         return {"ok": True}
 
     if text == "⚙️ Настройки":
         send_telegram(
             chat_id,
             "⚙️ Настройки скоро будут доступны.\n\n"
-            "Планируется:\n"
             "• время рассылки\n"
             "• таймзона\n"
             "• рабочие дни",
@@ -195,9 +168,8 @@ async def telegram_webhook(request: Request):
             chat_id,
             "ℹ️ *Как пользоваться ботом:*\n\n"
             "• Введи корпоративную почту\n"
-            "• Используй кнопки для управления\n"
-            "• Смотри план на сегодня и завтра\n\n"
-            "Если что-то пошло не так — напиши /start",
+            "• Используй кнопки\n"
+            "• Получай план на сегодня и завтра",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
@@ -227,6 +199,13 @@ async def outlook_webhook(
     events = data.get("events", [])
     day = data.get("day", "today")  # today | tomorrow
 
+    # 🔐 защита от Power Automate (если events пришёл строкой)
+    if isinstance(events, str):
+        try:
+            events = json.loads(events)
+        except Exception:
+            events = []
+
     chat_id = users.get(email)
     if not chat_id:
         return {"status": "user not registered"}
@@ -236,8 +215,12 @@ async def outlook_webhook(
     else:
         title = "📅 *План на сегодня:*" if day == "today" else "📆 *План на завтра:*"
         message = f"{title}\n\n"
+
         for e in events:
-            message += f"{e['start']}–{e['end']} • {e['subject']}\n"
+            start = e.get("start", "??")
+            end = e.get("end", "??")
+            subject = e.get("subject", "Без названия")
+            message += f"{start}–{end} • {subject}\n"
 
     last_plans.setdefault(email, {})
     last_plans[email][day] = message
