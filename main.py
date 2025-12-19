@@ -196,19 +196,41 @@ async def outlook_webhook(
     data = await request.json()
 
     email = data.get("email", "").lower()
-    events = data.get("events", [])
     day = data.get("day", "today")  # today | tomorrow
+    raw_events = data.get("events", [])
 
-    # 🔐 защита от Power Automate (если events пришёл строкой)
-    if isinstance(events, str):
+    # =========================
+    # NORMALIZE EVENTS (Power Automate proof)
+    # =========================
+
+    events: list[dict] = []
+
+    # вариант 1: events = { body: [...] }
+    if isinstance(raw_events, dict) and "body" in raw_events:
+        events = raw_events.get("body", [])
+
+    # вариант 2: events = [...] (идеальный вариант)
+    elif isinstance(raw_events, list):
+        events = raw_events
+
+    # вариант 3: events = строка
+    elif isinstance(raw_events, str):
         try:
-            events = json.loads(events)
+            parsed = json.loads(raw_events)
+            if isinstance(parsed, dict) and "body" in parsed:
+                events = parsed["body"]
+            elif isinstance(parsed, list):
+                events = parsed
         except Exception:
             events = []
 
     chat_id = users.get(email)
     if not chat_id:
         return {"status": "user not registered"}
+
+    # =========================
+    # BUILD MESSAGE
+    # =========================
 
     if not events:
         message = "📅 *Встреч нет* 🎉"
@@ -217,13 +239,22 @@ async def outlook_webhook(
         message = f"{title}\n\n"
 
         for e in events:
+            if not isinstance(e, dict):
+                continue
+
             start = e.get("start", "??")
             end = e.get("end", "??")
             subject = e.get("subject", "Без названия")
+
             message += f"{start}–{end} • {subject}\n"
+
+    # =========================
+    # SAVE & SEND
+    # =========================
 
     last_plans.setdefault(email, {})
     last_plans[email][day] = message
 
     send_telegram(chat_id, message, keyboard=main_menu_keyboard())
+
     return {"status": "ok"}
