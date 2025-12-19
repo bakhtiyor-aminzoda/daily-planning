@@ -239,14 +239,17 @@ async def outlook_webhook(
         message = f"{title}\n\n"
 
         for e in events:
-            if not isinstance(e, dict):
-                continue
-
             start = e.get("start", "??")
             end = e.get("end", "??")
-            subject = e.get("subject", "Без названия")
+            subject = e.get("subject", "Без темы")
+            organizer = e.get("organizer")
 
-            message += f"{start}–{end} • {subject}\n"
+            line = f"{start}–{end} • {subject}"
+            if organizer:
+                line += f"\n👤 {organizer}"
+
+            message += line + "\n\n"
+
 
     # =========================
     # SAVE & SEND
