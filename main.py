@@ -3,6 +3,7 @@ import requests
 import re
 import os
 import json
+import html
 
 from dotenv import load_dotenv
 
@@ -32,6 +33,12 @@ users: dict[str, int] = {}
 last_plans: dict[str, dict[str, str]] = {}
 
 # =========================
+# HELPERS
+# =========================
+def escape_html(text: str) -> str:
+    return html.escape(text)
+
+# =========================
 # TELEGRAM UI
 # =========================
 def main_menu_keyboard():
@@ -53,13 +60,48 @@ def send_telegram(chat_id: int, text: str, keyboard: dict | None = None):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
 
     if keyboard:
         payload["reply_markup"] = keyboard
 
     requests.post(url, json=payload, timeout=10)
+
+# =========================
+# MESSAGE FORMATTER
+# =========================
+def format_day_plan(date_label: str, events: list[dict]) -> str:
+    if not events:
+        return (
+            f"📅 <b>План на {date_label}</b>\n\n"
+            "Сегодня встреч нет 🎉\n"
+            "Можно спокойно поработать."
+        )
+
+    lines = [
+        f"📅 <b>План на {date_label}</b>\n",
+        "━━━━━━━━━━━━━━"
+    ]
+
+    for e in events:
+        start = escape_html(e.get("start", "??"))
+        end = escape_html(e.get("end", ""))
+        subject = escape_html(e.get("subject", "Без темы"))
+        organizer = e.get("organizer")
+
+        lines.append(f"🕘 {start}–{end}")
+        lines.append(f"<b>{subject}</b>")
+
+        if organizer:
+            lines.append(f"👤 {escape_html(organizer)}")
+
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append("⏰ Напоминание придёт за 10 минут")
+
+    return "\n".join(lines)
 
 # =========================
 # ROOT
@@ -88,7 +130,7 @@ async def telegram_webhook(request: Request):
             chat_id,
             "Привет 👋\n\n"
             "Я помогу тебе получать план дня из Outlook 📅\n\n"
-            "Сначала введи *корпоративную почту* 👇",
+            "Сначала введи <b>корпоративную почту</b> 👇",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
@@ -101,7 +143,7 @@ async def telegram_webhook(request: Request):
 
         send_telegram(
             chat_id,
-            f"✅ Почта *{email}* сохранена.\n\n"
+            f"✅ Почта <b>{escape_html(email)}</b> сохранена.\n\n"
             "Теперь ты можешь:\n"
             "• смотреть план на сегодня\n"
             "• заранее проверять завтрашний день 📆",
@@ -141,7 +183,7 @@ async def telegram_webhook(request: Request):
             plan = last_plans[email].get("today") or last_plans[email].get("tomorrow")
             send_telegram(
                 chat_id,
-                f"🔁 *Последний план:*\n\n{plan}",
+                f"🔁 <b>Последний план</b>\n\n{plan}",
                 keyboard=main_menu_keyboard()
             )
         else:
@@ -155,7 +197,8 @@ async def telegram_webhook(request: Request):
     if text == "⚙️ Настройки":
         send_telegram(
             chat_id,
-            "⚙️ Настройки скоро будут доступны.\n\n"
+            "⚙️ <b>Настройки</b>\n\n"
+            "Скоро здесь появятся:\n"
             "• время рассылки\n"
             "• таймзона\n"
             "• рабочие дни",
@@ -166,10 +209,10 @@ async def telegram_webhook(request: Request):
     if text == "ℹ️ Помощь":
         send_telegram(
             chat_id,
-            "ℹ️ *Как пользоваться ботом:*\n\n"
-            "• Введи корпоративную почту\n"
-            "• Используй кнопки\n"
-            "• Получай план на сегодня и завтра",
+            "ℹ️ <b>Помощь</b>\n\n"
+            "1️⃣ Введи корпоративную почту\n"
+            "2️⃣ Используй кнопки\n"
+            "3️⃣ Получай план дня из Outlook 📅",
             keyboard=main_menu_keyboard()
         )
         return {"ok": True}
@@ -196,24 +239,18 @@ async def outlook_webhook(
     data = await request.json()
 
     email = data.get("email", "").lower()
-    day = data.get("day", "today")  # today | tomorrow
+    day = data.get("day", "today")
     raw_events = data.get("events", [])
 
     # =========================
-    # NORMALIZE EVENTS (Power Automate proof)
+    # NORMALIZE EVENTS
     # =========================
-
     events: list[dict] = []
 
-    # вариант 1: events = { body: [...] }
     if isinstance(raw_events, dict) and "body" in raw_events:
         events = raw_events.get("body", [])
-
-    # вариант 2: events = [...] (идеальный вариант)
     elif isinstance(raw_events, list):
         events = raw_events
-
-    # вариант 3: events = строка
     elif isinstance(raw_events, str):
         try:
             parsed = json.loads(raw_events)
@@ -228,36 +265,11 @@ async def outlook_webhook(
     if not chat_id:
         return {"status": "user not registered"}
 
-    # =========================
-    # BUILD MESSAGE
-    # =========================
-
-    if not events:
-        message = "📅 *Встреч нет* 🎉"
-    else:
-        title = "📅 *План на сегодня:*" if day == "today" else "📆 *План на завтра:*"
-        message = f"{title}\n\n"
-
-        for e in events:
-            start = e.get("start", "??")
-            end = e.get("end", "??")
-            subject = e.get("subject", "Без темы")
-            organizer = e.get("organizer")
-
-            line = f"{start}–{end} • {subject}"
-            if organizer:
-                line += f"\n👤 {organizer}"
-
-            message += line + "\n\n"
-
-
-    # =========================
-    # SAVE & SEND
-    # =========================
+    label = "сегодня" if day == "today" else "завтра"
+    message = format_day_plan(label, events)
 
     last_plans.setdefault(email, {})
     last_plans[email][day] = message
 
     send_telegram(chat_id, message, keyboard=main_menu_keyboard())
-
     return {"status": "ok"}
